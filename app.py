@@ -68,7 +68,7 @@ if uploadedFile:
                 downloadFileName = f"maxscores_{originalName}.xlsx"
 
                 st.download_button(
-                    label="📥 Download Result Excel",
+                    label="📥 Download MaxScores Excel File",
                     data=output,
                     file_name=downloadFileName,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
