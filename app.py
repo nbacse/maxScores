@@ -1,54 +1,54 @@
 import streamlit as st
 import pandas as pd
-import io
 import re
+from io import BytesIO
 
-st.title("🎓 Max Scores Per USN")
+st.title("Max Scores Per USN")
+st.write("Upload an Excel file to compute the maximum scores for each USN.")
 
-uploadedFile = st.file_uploader("📤 Upload your Excel file", type=["xlsx"])
+uploadedFile = st.file_uploader("Choose an Excel file", type=["xlsx"])
 
-def detect_usn_column(df):
-    usn_pattern = re.compile(r"1BY21", re.IGNORECASE)
-    for col in df.columns[:2]:  # Only check first two columns (A or B)
-        if df[col].astype(str).str.contains(usn_pattern).any():
+def find_usn_column(df):
+    for col in df.columns:
+        if df[col].astype(str).str.contains(r"1BY21", case=False).any():
             return col
     return None
 
 if uploadedFile:
-    df = pd.read_excel(uploadedFile)
+    try:
+        df = pd.read_excel(uploadedFile)
 
-    usn_col = detect_usn_column(df)
+        usnCol = find_usn_column(df)
+        if not usnCol:
+            st.error("Could not find a USN column with pattern '1BY21'. Please check your file.")
+        else:
+            scoreCols = df.columns[df.columns.get_loc(usnCol)+1:]  # All columns after USN are assumed scores
 
-    if not usn_col:
-        st.error("❌ USN column not found. Ensure a column contains '1BY21' pattern.")
-    else:
-        st.success(f"✅ Detected USN column: {usn_col}")
-        st.write("### 📋 Uploaded Data Preview", df.head())
+            resultRows = []
+            for usn, group in df.groupby(usnCol):
+                row = {usnCol: usn}
+                for col in scoreCols:
+                    row[col] = pd.to_numeric(group[col], errors='coerce').max()
+                resultRows.append(row)
 
-        grouped = df.groupby(usn_col)
+            resultDf = pd.DataFrame(resultRows)
 
-        output = df.iloc[0:0].copy()  # Empty DataFrame with same headers
+            st.success("Max scores calculated successfully!")
 
-        for usn, group in grouped:
-            maxRow = [usn]
-            for col in df.columns:
-                if col == usn_col:
-                    continue
-                colValues = pd.to_numeric(group[col], errors='coerce')
-                maxRow.append(colValues.max(skipna=True))
-            rowDict = dict(zip([usn_col] + [c for c in df.columns if c != usn_col], maxRow))
-            output = output.append(rowDict, ignore_index=True)
+            # Display the result
+            st.dataframe(resultDf)
 
-        # Reorder columns
-        output = output[[usn_col] + [c for c in df.columns if c != usn_col]]
+            # Download as Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                resultDf.to_excel(writer, index=False, sheet_name='Max Scores')
 
-        towrite = io.BytesIO()
-        with pd.ExcelWriter(towrite, engine='openpyxl') as writer:
-            output.to_excel(writer, index=False, sheet_name="Max Scores")
+            st.download_button(
+                label="📥 Download Result Excel",
+                data=output.getvalue(),
+                file_name="max_scores.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
-        st.download_button(
-            label="📥 Download Max Scores Excel",
-            data=towrite.getvalue(),
-            file_name="max_scores_per_usn.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
