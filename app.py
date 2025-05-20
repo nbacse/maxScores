@@ -1,78 +1,83 @@
 import streamlit as st
 import pandas as pd
 import re
-import io
-import base64
+import tempfile
 import os
 
-st.set_page_config(page_title="Max Scores Extractor", layout="centered")
+st.set_page_config(page_title="Max Scores", layout="wide")
 st.title("Question-wise Max Scores Per USN")
 
-uploadedFile = st.file_uploader("Upload Excel File (.xls or .xlsx)", type=["xls", "xlsx"])
-
-if uploadedFile:
+uploadedFile = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
+if uploadedFile is not None:
     try:
-        # Read Excel file
-        if uploadedFile.name.endswith(".xls"):
-            import xlrd
-            df = pd.read_excel(uploadedFile, engine='xlrd', header=None)
-        else:
-            df = pd.read_excel(uploadedFile, engine='openpyxl', header=None)
+        # Use temporary file to handle .xls as well
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xls") as tmp:
+            tmp.write(uploadedFile.read())
+            tmpPath = tmp.name
 
-        # Auto-detect USN row
-        usnPattern = re.compile(r'\b1[a-z]{2}\d{2}[a-z]{2,3}\d{3}\b', re.I)
-        usnRowIdx = None
-        for i, row in df.iterrows():
-            if any(re.search(usnPattern, str(cell)) for cell in row):
-                usnRowIdx = i
+        # Read all sheets
+        excelFile = pd.ExcelFile(tmpPath, engine="xlrd" if uploadedFile.name.endswith(".xls") else None)
+        sheet = excelFile.parse(excelFile.sheet_names[0], header=None)
+
+        # Detect USN row
+        usnRowIndex = None
+        for i in range(min(20, len(sheet))):
+            if sheet.iloc[i].astype(str).str.contains(r"\b1[a-zA-Z]{2}\d{2}", regex=True).any():
+                usnRowIndex = i
                 break
 
-        if usnRowIdx is None:
-            st.error("USN row not found.")
+        if usnRowIndex is None:
+            st.error("❌ Could not detect USN row.")
         else:
-            # Set header and extract data
-            df.columns = df.iloc[usnRowIdx - 1]
-            df = df.iloc[usnRowIdx:]
-            df = df.reset_index(drop=True)
+            # Set headers
+            sheet.columns = sheet.iloc[usnRowIndex - 1]
+            data = sheet.iloc[usnRowIndex:]
 
-            st.markdown("### First 5 Rows of Input File")
-            st.dataframe(df.head(5))
+            st.info("✅ Max scores computed successfully!")
+            st.subheader("📄 Preview of Input File")
+            st.dataframe(data.head(5))
 
-            # Compute max score for each USN
-            result = []
-            columns = df.columns.tolist()
-            result.append(columns)
+            usnCol = next((col for col in data.columns if str(col).lower().startswith("usn")), None)
+            if not usnCol:
+                st.error("❌ USN column not found.")
+            else:
+                usns = data[usnCol].astype(str).str.extract(r'(1[a-zA-Z]{2,4}\d{2}\w{2,3}\d{3})', expand=False)
+                data[usnCol] = usns
+                data = data.dropna(subset=[usnCol])
 
-            for i in range(len(df)):
-                row = df.iloc[i]
-                rowDict = {}
-                for col in columns:
-                    if pd.api.types.is_numeric_dtype(df[col]):
-                        rowDict[col] = row[col]
-                    else:
-                        rowDict[col] = row[col]
-                result.append(rowDict)
+                # Numeric columns
+                numericCols = data.select_dtypes(include='number').columns
 
-            output_df = pd.DataFrame(result[1:], columns=result[0])
+                output = pd.DataFrame()
+                for _, row in data.iterrows():
+                    maxScores = row[numericCols]
+                    maxDict = maxScores.to_dict()
+                    rowDict = {usnCol: row[usnCol], **maxDict}
+                    output = pd.concat([output, pd.DataFrame([rowDict])], ignore_index=True)
 
-            # Remove evaluator-related columns
-            filtered_columns = [col for col in output_df.columns if not re.search(r"eval.*|evaluator", str(col), re.I)]
-            output_df = output_df[filtered_columns]
+                # Insert all columns from original sheet in the same order
+                allCols = data.columns
+                nonEvalCols = [col for col in allCols if not re.search(r"eval.*|evaluator", str(col), re.I)]
 
-            # Download link
-            towrite = io.BytesIO()
-            with pd.ExcelWriter(towrite, engine='xlsxwriter') as writer:
-                output_df.to_excel(writer, index=False, sheet_name='MaxScores')
-                writer.save()
-            towrite.seek(0)
+                # Reorder final output to match input columns (excluding evaluator-related)
+                output = output[[col for col in nonEvalCols if col in output.columns]]
 
-            st.success("✅ Max scores computed successfully.")
-            st.download_button(
-                label="📥 Download MaxScores Excel File",
-                data=towrite,
-                file_name="maxscores_filename.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                # File name
+                originalName = uploadedFile.name.rsplit(".", 1)[0]
+                downloadName = f"maxscores_{originalName}.xlsx"
+
+                # Save and offer download
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmpOut:
+                    output.to_excel(tmpOut.name, index=False)
+                    st.download_button(
+                        label="📥 Download MaxScores Excel File",
+                        data=open(tmpOut.name, "rb").read(),
+                        file_name=downloadName,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
 
     except Exception as e:
-        st.error(f"❌ An error occurred: {str(e)}")
+        st.error(f"❌ Error: {e}")
+    finally:
+        if os.path.exists(tmpPath):
+            os.remove(tmpPath)
