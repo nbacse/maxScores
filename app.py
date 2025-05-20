@@ -75,4 +75,4 @@ if uploadedFile:
                 )
 
     except Exception as e:
-        st.error(f"An error occurred: {e}")
+        st.error(f"An error occurred:  {e}")
