@@ -3,8 +3,8 @@ import pandas as pd
 import re
 from io import BytesIO
 
-st.title("Max Scores Per USN")
-st.write("Upload an Excel file to compute the maximum scores for each USN.")
+st.title("Question-wise Max Scores Per USN")
+st.write("Upload an Excel file to compute the question-wise maximum scores for each USN.")
 
 uploadedFile = st.file_uploader("Choose an Excel file", type=["xlsx"])
 
