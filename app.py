@@ -1,126 +1,94 @@
 import streamlit as st
 import pandas as pd
+import io
 import re
-from io import BytesIO
 
 st.title("Question-wise Max Scores Per USN")
 
-uploadedFile = st.file_uploader("Upload Excel file (.xls or .xlsx)", type=["xls", "xlsx"])
+def find_header_and_usn_col(df):
+    # Scan first 10 rows, columns A(0) and B(1) to find USN pattern '1BY', '1TD', '1TE', '1BY21', '1BY22', etc.
+    usn_pattern = re.compile(r"1(b[ytd]|BY21|BY22|BY23|TD|TE)", re.I)
+    for i in range(min(10, len(df))):
+        for col in [0, 1]:
+            cell_val = str(df.iat[i, col]).strip()
+            if usn_pattern.match(cell_val):
+                return i, col
+    # Default fallback
+    return 0, 0
 
-def make_unique(cols):
-    seen = {}
-    newCols = []
-    for col in cols:
-        if col in seen:
-            seen[col] += 1
-            newCols.append(f"{col}_{seen[col]}")
-        else:
-            seen[col] = 0
-            newCols.append(col)
-    return newCols
+uploadedFile = st.file_uploader("Upload Excel file (xlsx)", type=["xlsx"])
 
 if uploadedFile is not None:
-    # Read Excel
     try:
-        df = pd.read_excel(uploadedFile, header=None)
+        # Read entire file without header to locate header row dynamically
+        df_raw = pd.read_excel(uploadedFile, header=None)
     except Exception as e:
         st.error(f"Error reading file: {e}")
         st.stop()
 
-    # Detect USN row and column
-    usnRowIndex = None
-    usnColIndex = None
-    usnPattern = re.compile(r"1(?:by|td|te)[\d]{0,2}", re.IGNORECASE)  # pattern covers your cases
+    header_row_idx, usn_col_idx = find_header_and_usn_col(df_raw)
 
-    for i, row in df.iterrows():
-        for j, cell in enumerate(row):
-            if isinstance(cell, str) and usnPattern.match(cell.strip()):
-                usnRowIndex = i
-                usnColIndex = j
-                break
-        if usnRowIndex is not None:
-            break
+    # Re-read with proper header row
+    uploadedFile.seek(0)
+    df = pd.read_excel(uploadedFile, header=header_row_idx)
+    headers = list(df.columns)
 
-    if usnRowIndex is None:
-        st.error("❌ Could not find USN pattern like '1BY22', '1TD', '1TE', etc.")
+    # Filter rows below header
+    df_data = df.iloc[(header_row_idx + 1) - header_row_idx :].reset_index(drop=True)
+
+    # Filter rows that have a valid USN pattern in detected USN column
+    usn_pattern = re.compile(r"1(b[ytd]|BY\d{2}|TD|TE)", re.I)
+    df_data = df_data[df[headers[usn_col_idx]].astype(str).str.match(usn_pattern)]
+
+    if df_data.empty:
+        st.error("No valid USN data found based on detected pattern. Please check your file.")
         st.stop()
 
-    if usnRowIndex == 0:
-        st.error("USN found in first row; cannot identify header row above it.")
-        st.stop()
+    st.subheader("Preview of Uploaded Data (Top 5 rows)")
+    st.dataframe(df.head(5))
 
-    headerRowIndex = usnRowIndex - 1
-
-    headers = df.iloc[headerRowIndex].astype(str).tolist()
-    headers = make_unique(headers)
-
-    data = df.iloc[usnRowIndex:].copy()
-    data.columns = headers
-    data.reset_index(drop=True, inplace=True)
-
-    st.subheader("Preview of Input Data (top 5 rows)")
-    st.dataframe(data.head(5))
-
-    # Prepare for max score calc
-    # USN col is usnColIndex (e.g. 0 or 1)
-    # Scores start from col 3 (D) per your original Google Apps Script,
-    # but here we keep it flexible: max scores from columns to right of USN col + 2
-    # We'll assume scores start from column index 3 onwards (like original) or after USN col + 2?
-
-    # To be safe, let's do from col 3 onwards if exists, else from USN col + 2 onwards
-    startScoreCol = max(3, usnColIndex + 2)
-
+    # Group by USN
     usnMap = {}
-    for idx, row in data.iterrows():
-        usn = row.iloc[usnColIndex]
-        if not usn or not isinstance(usn, str):
-            continue
-        usn = usn.strip()
+    for _, row in df_data.iterrows():
+        usn = str(row[headers[usn_col_idx]]).strip()
         if usn not in usnMap:
             usnMap[usn] = []
         usnMap[usn].append(row)
 
+    # Identify start of score columns: after USN col (start from usn_col_idx+1)
+    startScoreCol = usn_col_idx + 1
+
     resultRows = []
     for usn, rows in usnMap.items():
-        maxScores = []
-        # Collect max scores for all relevant columns
+        firstRow = rows[0].copy()
         for colIndex in range(startScoreCol, len(headers)):
             colScores = []
             for r in rows:
-                val = r.iloc[colIndex]
+                val = r[headers[colIndex]]
                 try:
                     score = float(val)
                     colScores.append(score)
                 except (ValueError, TypeError):
                     pass
             maxScore = max(colScores) if colScores else 0
-            maxScores.append(maxScore)
-        # Build result row: USN + max scores
-        resultRows.append([usn] + maxScores)
+            firstRow[headers[colIndex]] = maxScore
+        resultRows.append(firstRow)
 
-    # Build result dataframe headers: USN + relevant score columns headers
-    resultHeaders = [headers[usnColIndex]] + headers[startScoreCol:]
+    outputDf = pd.DataFrame(resultRows, columns=headers)
 
-    outputDf = pd.DataFrame(resultRows, columns=resultHeaders)
-
-    st.success("✅ Max scores computed successfully!")
+    st.success("Max scores computed successfully!")
 
     # Download button
-    originalName = uploadedFile.name
-    if '.' in originalName:
-        baseName = originalName.rsplit('.', 1)[0]
-    else:
-        baseName = originalName
+    originalName = uploadedFile.name.rsplit(".", 1)[0]
+    outputFilename = f"maxscores_{originalName}.xlsx"
 
-    outputFileName = f"maxscores_{baseName}.xlsx"
-
-    towrite = BytesIO()
+    towrite = io.BytesIO()
     outputDf.to_excel(towrite, index=False)
     towrite.seek(0)
 
     st.download_button(
         label="📥 Download MaxScores Excel File",
         data=towrite,
-        file_name=outputFileName,
+        file_name=outputFilename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
