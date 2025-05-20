@@ -33,22 +33,19 @@ if uploadedFile:
 
             resultDf = pd.DataFrame(resultRows)
 
-            st.success("Max scores calculated successfully!")
+            # ✅ Drop columns B and C (second and third columns)
+            if resultDf.shape[1] >= 3:
+                resultDf.drop(resultDf.columns[[1, 2]], axis=1, inplace=True)
 
-            # Display the result
+            st.success("Max scores calculated successfully!")
             st.dataframe(resultDf)
 
-            # Download as Excel
+            # Generate downloadable Excel
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 resultDf.to_excel(writer, index=False, sheet_name='Max Scores')
 
-            st.download_button(
-                label="📥 Download Result Excel",
-                data=output.getvalue(),
-                file_name="max_scores.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            output.seek(0)
 
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
+            # ✅ Extract filename without extension
+            originalName = uploadedFile.name.rsplit(".
