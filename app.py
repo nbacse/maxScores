@@ -3,83 +3,80 @@ import pandas as pd
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Max Scores", layout="centered")
-st.title("Question-wise Max Scores Per USN")
+st.set_page_config(page_title="Max Scores Per USN", layout="centered")
+st.title("📊 Question-wise Max Scores Per USN")
 
-uploadedFile = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
+uploadedFile = st.file_uploader("Upload Excel File (.xls or .xlsx)", type=["xls", "xlsx"])
 
 if uploadedFile:
-    # Detect file extension
-    fileExtension = uploadedFile.name.split(".")[-1].lower()
+    # Detect file type and read accordingly
+    try:
+        if uploadedFile.name.endswith(".xls"):
+            df = pd.read_excel(uploadedFile, engine="xlrd")
+        else:
+            df = pd.read_excel(uploadedFile)
+    except Exception as e:
+        st.error(f"❌ Error reading file: {e}")
+        st.stop()
 
-    # Read Excel based on extension
-    if fileExtension == "xls":
-        df = pd.read_excel(uploadedFile, engine="xlrd")
-    else:
-        df = pd.read_excel(uploadedFile, engine="openpyxl")
-
-    # Show top 5 rows of uploaded file
-    st.subheader("Preview of Uploaded File:")
-    st.dataframe(df.head())
-
-    # Find the header row and USN column
-    usnRegex = re.compile(r"1[a-zA-Z]{2}\d{2}", re.IGNORECASE)
-    headerRow = None
+    # Find the row where USN starts (based on pattern)
+    usnRowIndex = None
     usnColIndex = None
+    usnPattern = re.compile(r"1[A-Z]{2}\d{2}", re.IGNORECASE)
 
     for i, row in df.iterrows():
         for j, cell in enumerate(row):
-            if isinstance(cell, str) and usnRegex.search(cell):
-                headerRow = i - 1
+            if isinstance(cell, str) and usnPattern.match(cell.strip()):
+                usnRowIndex = i
                 usnColIndex = j
                 break
-        if headerRow is not None:
+        if usnRowIndex is not None:
             break
 
-    if headerRow is not None:
-        df.columns = df.iloc[headerRow]
-        df = df.iloc[headerRow + 1:]
-        df = df.reset_index(drop=True)
-        df = df.dropna(subset=[df.columns[usnColIndex]])
+    if usnRowIndex is None:
+        st.error("❌ Could not find USN pattern like '1BY22', '1TD', etc.")
+        st.stop()
 
-        usnColName = df.columns[usnColIndex]
-        allHeaders = df.columns.tolist()
+    # Extract headers and data from the detected row
+    headers = df.iloc[usnRowIndex - 1].tolist()
+    data = df.iloc[usnRowIndex:].copy()
+    data.columns = headers
+    data.reset_index(drop=True, inplace=True)
 
-        grouped = df.groupby(usnColName)
-        output = pd.DataFrame(columns=allHeaders)
+    # Show top 5 rows of input data
+    st.subheader("📄 Preview of Uploaded Data")
+    st.dataframe(data.head(5))
 
-        for usn, group in grouped:
-            rowDict = {usnColName: usn}
-            for col in allHeaders:
-                if col == usnColName:
-                    continue
-                try:
-                    numericValues = pd.to_numeric(group[col], errors='coerce')
-                    maxVal = numericValues.max()
-                    if pd.notna(maxVal):
-                        rowDict[col] = maxVal
-                    else:
-                        rowDict[col] = ""
-                except:
-                    rowDict[col] = ""
-            output = pd.concat([output, pd.DataFrame([rowDict])], ignore_index=True)
+    # Group by USN column
+    usnGroups = data.groupby(data.columns[usnColIndex])
+    outputRows = []
 
-        # Write to Excel
-        outputFile = BytesIO()
-        originalName = uploadedFile.name.rsplit(".", 1)[0]
-        fileName = f"maxscores_{originalName}.xlsx"
+    for usn, group in usnGroups:
+        scoresOnly = group.iloc[:, usnColIndex + 3:]  # Assuming scores start after column C
+        maxScores = scoresOnly.max(numeric_only=True)
+        rowDict = {data.columns[usnColIndex]: usn}
+        rowDict.update(maxScores.to_dict())
+        outputRows.append(rowDict)
 
-        with pd.ExcelWriter(outputFile, engine="openpyxl") as writer:
-            output.to_excel(writer, index=False)
+    output = pd.DataFrame(outputRows)
 
-        # ✅ Success message
-        st.success("✅ Max scores computed successfully!")
+    # Set column order: USN first, then scores
+    output = output[[data.columns[usnColIndex]] + [col for col in output.columns if col != data.columns[usnColIndex]]]
 
-        st.download_button(
-            label="📥 Download MaxScores Excel File",
-            data=outputFile.getvalue(),
-            file_name=fileName,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.error("❌ Could not detect USN column (e.g., 1BY21, 1TD, 1TE, etc.). Please check your file.")
+    # Save to Excel
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        output.to_excel(writer, index=False, sheet_name="Max Scores")
+
+    buffer.seek(0)
+    originalName = uploadedFile.name.rsplit(".", 1)[0]
+    downloadFileName = f"maxscores_{originalName}.xlsx"
+
+    st.success("✅ Max scores computed successfully!")
+
+    st.download_button(
+        label="📥 Download MaxScores Excel File",
+        data=buffer,
+        file_name=downloadFileName,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
