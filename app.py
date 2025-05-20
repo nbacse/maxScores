@@ -3,86 +3,83 @@ import pandas as pd
 import re
 from io import BytesIO
 
+st.set_page_config(page_title="Max Scores", layout="centered")
 st.title("Question-wise Max Scores Per USN")
 
-uploadedFile = st.file_uploader("Upload Excel file", type=["xls", "xlsx"])
+uploadedFile = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
 
-if uploadedFile is not None:
-    try:
-        # Handle both .xls and .xlsx
-        if uploadedFile.name.endswith(".xls"):
-            df = pd.read_excel(uploadedFile, engine="xlrd", header=None)
-        else:
-            df = pd.read_excel(uploadedFile, header=None)
+if uploadedFile:
+    # Detect file extension
+    fileExtension = uploadedFile.name.split(".")[-1].lower()
 
-        # Detect USN row and column
-        usnPattern = re.compile(r"\b1(?:[A-Z]{2})?(?:\d{2})?[A-Z]{2}\d{3}\b", re.IGNORECASE)
+    # Read Excel based on extension
+    if fileExtension == "xls":
+        df = pd.read_excel(uploadedFile, engine="xlrd")
+    else:
+        df = pd.read_excel(uploadedFile, engine="openpyxl")
 
-        usnRowIndex, usnColIndex = None, None
-        for rowIdx in range(len(df)):
-            for colIdx in range(df.shape[1]):
-                cellValue = str(df.iat[rowIdx, colIdx])
-                if usnPattern.search(cellValue):
-                    usnRowIndex, usnColIndex = rowIdx, colIdx
-                    break
-            if usnRowIndex is not None:
+    # Show top 5 rows of uploaded file
+    st.subheader("Preview of Uploaded File:")
+    st.dataframe(df.head())
+
+    # Find the header row and USN column
+    usnRegex = re.compile(r"1[a-zA-Z]{2}\d{2}", re.IGNORECASE)
+    headerRow = None
+    usnColIndex = None
+
+    for i, row in df.iterrows():
+        for j, cell in enumerate(row):
+            if isinstance(cell, str) and usnRegex.search(cell):
+                headerRow = i - 1
+                usnColIndex = j
                 break
+        if headerRow is not None:
+            break
 
-        if usnRowIndex is None:
-            st.error("USN column not found based on pattern (e.g., 1BY22CS001). Please check your file.")
-        else:
-            # Extract header and data
-            headers = df.iloc[usnRowIndex - 1].tolist()
-            data = df.iloc[usnRowIndex:].copy()
-            data.columns = headers
-            data.reset_index(drop=True, inplace=True)
+    if headerRow is not None:
+        df.columns = df.iloc[headerRow]
+        df = df.iloc[headerRow + 1:]
+        df = df.reset_index(drop=True)
+        df = df.dropna(subset=[df.columns[usnColIndex]])
 
-            usnColName = headers[usnColIndex]
-            grouped = {}
+        usnColName = df.columns[usnColIndex]
+        allHeaders = df.columns.tolist()
 
-            for _, row in data.iterrows():
-                usn = row[usnColName]
-                if pd.isna(usn):
+        grouped = df.groupby(usnColName)
+        output = pd.DataFrame(columns=allHeaders)
+
+        for usn, group in grouped:
+            rowDict = {usnColName: usn}
+            for col in allHeaders:
+                if col == usnColName:
                     continue
-                if usn not in grouped:
-                    grouped[usn] = []
-                grouped[usn].append(row)
+                try:
+                    numericValues = pd.to_numeric(group[col], errors='coerce')
+                    maxVal = numericValues.max()
+                    if pd.notna(maxVal):
+                        rowDict[col] = maxVal
+                    else:
+                        rowDict[col] = ""
+                except:
+                    rowDict[col] = ""
+            output = pd.concat([output, pd.DataFrame([rowDict])], ignore_index=True)
 
-            maxScoreRows = []
-            for usn, rows in grouped.items():
-                scoresDf = pd.DataFrame(rows)
-                maxRow = {usnColName: usn}
-                for col in scoresDf.columns:
-                    if col == usnColName:
-                        continue
-                    try:
-                        numericVals = pd.to_numeric(scoresDf[col], errors='coerce')
-                        maxVal = numericVals.max()
-                        if pd.notna(maxVal):
-                            maxRow[col] = maxVal
-                    except:
-                        continue
-                maxScoreRows.append(maxRow)
+        # Write to Excel
+        outputFile = BytesIO()
+        originalName = uploadedFile.name.rsplit(".", 1)[0]
+        fileName = f"maxscores_{originalName}.xlsx"
 
-            outputDf = pd.DataFrame(maxScoreRows)
+        with pd.ExcelWriter(outputFile, engine="openpyxl") as writer:
+            output.to_excel(writer, index=False)
 
-            # Remove columns B and C (i.e., 2nd and 3rd columns) if they exist
-            if outputDf.shape[1] > 2:
-                outputDf.drop(outputDf.columns[[1, 2]], axis=1, inplace=True)
+        # ✅ Success message
+        st.success("✅ Max scores computed successfully!")
 
-            # Download link
-            towrite = BytesIO()
-            originalName = uploadedFile.name.rsplit(".", 1)[0]
-            outputDf.to_excel(towrite, index=False, sheet_name="Max Scores")
-            towrite.seek(0)
-
-            st.success("✅ Max scores computed successfully.")
-            st.download_button(
-                label="📥 Download MaxScores Excel File",
-                data=towrite,
-                file_name=f"maxscores_{originalName}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-    except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        st.download_button(
+            label="📥 Download MaxScores Excel File",
+            data=outputFile.getvalue(),
+            file_name=fileName,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.error("❌ Could not detect USN column (e.g., 1BY21, 1TD, 1TE, etc.). Please check your file.")
