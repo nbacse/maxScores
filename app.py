@@ -48,4 +48,15 @@ if uploadedFile:
             output.seek(0)
 
             # ✅ Extract filename without extension
-            originalName = uploadedFile.name.rsplit(".
+            originalName = uploadedFile.name.rsplit(".", 1)[0]
+            downloadFileName = f"maxscores_{originalName}.xlsx"
+
+            st.download_button(
+                label="📥 Download MaxScores Excel File",
+                data=output,
+                file_name=downloadFileName,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
