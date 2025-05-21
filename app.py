@@ -2,69 +2,64 @@ import streamlit as st
 import pandas as pd
 import re
 import base64
+from io import BytesIO
 
 st.set_page_config(page_title="Max Scores Per USN", layout="wide")
-st.markdown("""
-    <h2 style='text-align: center;'>Question-wise Max Scores Per USN</h2>
-""", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align: center;'>Question-wise Max Scores Per USN</h2>", unsafe_allow_html=True)
 
-uploadedFile = st.file_uploader("Upload Excel File", type=["xlsx", "xls"], help="Limit: 200MB per file - XLSX, XLS")
-data = None
+uploadedFile = st.file_uploader("Upload Excel File", type=["xlsx", "xls"], help="Limit: 200MB per file")
 
-if uploadedFile is not None:
+def detect_header_row(df):
+    for idx, row in df.iterrows():
+        row_str = row.astype(str).str.lower()
+        if row_str.str.contains("usn").any() or row_str.str.contains(r"1[a-z]{2}\d{2}[a-z]{2}\d{3}", regex=True).any():
+            return idx
+    return None
+
+if uploadedFile:
     try:
-        # Try reading the Excel file
         dfList = pd.read_excel(uploadedFile, sheet_name=None, header=None)
         firstSheet = list(dfList.keys())[0]
         rawData = dfList[firstSheet]
-
-        # Improved header detection logic
-        usnRegex = r'1[a-zA-Z]{2,4}\d{2}\w{2,3}\d{3}|1[a-zA-Z]{2,3}\d{2,3}'
-        headerRow = None
-        for idx, row in rawData.iterrows():
-            rowStr = row.astype(str).str.upper()
-            if rowStr.str.contains("USN").any() or rowStr.str.contains(usnRegex).any():
-                headerRow = idx
-                break
-
-        if headerRow is not None:
-            data = pd.read_excel(uploadedFile, sheet_name=firstSheet, header=headerRow)
+        
+        headerRow = detect_header_row(rawData)
+        if headerRow is None:
+            st.error("❌ Could not detect header row. Please check the uploaded file format.")
         else:
-            st.error("Could not detect header row. Please check the uploaded file format.")
-
-        if data is not None:
+            data = pd.read_excel(uploadedFile, sheet_name=firstSheet, header=headerRow)
             st.success("✅ Max scores computed successfully!")
 
-            # Display preview
+            # Show preview of input
             with st.expander("📄 Preview of Input File"):
-                st.dataframe(data.head(10))
+                st.dataframe(data.head(5))
 
             # Detect USN column
             usnCol = next((col for col in data.columns if re.search(r'usn', str(col), re.I)), None)
-
             if not usnCol:
                 st.error("❌ USN column not found.")
             else:
-                # Extract cleaned USN values
-                usns = data[usnCol].astype(str).str.extract(r'(1[a-zA-Z]{2,4}\d{2}\w{2,3}\d{3})', expand=False)
-                data[usnCol] = usns
+                # Clean USN values
+                data[usnCol] = data[usnCol].astype(str).str.extract(r'(1[a-zA-Z]{2,4}\d{2}[a-zA-Z]{2,3}\d{3})', expand=False)
                 data = data.dropna(subset=[usnCol])
 
-                # Remove unnecessary columns like evaluator_name, Eval_version, etc.
-                removeCols = [col for col in data.columns if re.search(r'(evaluator|eval[_ ]?version)', str(col), re.I)]
-                cleanedData = data.drop(columns=removeCols)
+                # Drop evaluator-related columns ONLY
+                dropCols = [col for col in data.columns if re.search(r'(evaluator|eval[_ ]?version)', str(col), re.I)]
+                cleanedData = data.drop(columns=dropCols, errors='ignore')
 
-                # Group by USN and get max of each column
+                # Group and compute max
                 maxScores = cleanedData.groupby(usnCol, as_index=False).max(numeric_only=True)
 
                 st.subheader("📊 Max Scores Per USN")
                 st.dataframe(maxScores)
 
-                # Download button
-                def convert_df(df):
-                    return df.to_excel(index=False, engine='openpyxl')
+                # Prepare downloadable Excel
+                def to_excel_download(df):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False)
+                    return output.getvalue()
 
-                excelBytes = convert_df(maxScores)
+                excelBytes = to_excel_download(maxScores)
                 b64 = base64.b64encode(excelBytes).decode()
                 href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="MaxScoresPerUSN.xlsx">📥 Download Max Scores Excel File</a>'
                 st.markdown(href, unsafe_allow_html=True)
