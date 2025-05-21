@@ -13,15 +13,17 @@ data = None
 
 if uploadedFile is not None:
     try:
-        # Try reading the Excel file without assuming header
+        # Try reading the Excel file
         dfList = pd.read_excel(uploadedFile, sheet_name=None, header=None)
         firstSheet = list(dfList.keys())[0]
         rawData = dfList[firstSheet]
 
-        # Identify the header row by looking for 'USN' or USN-like pattern
+        # Improved header detection logic
+        usnRegex = r'1[a-zA-Z]{2,4}\d{2}\w{2,3}\d{3}|1[a-zA-Z]{2,3}\d{2,3}'
         headerRow = None
         for idx, row in rawData.iterrows():
-            if row.astype(str).str.contains(r'\busn\b', case=False, na=False).any():
+            rowStr = row.astype(str).str.upper()
+            if rowStr.str.contains("USN").any() or rowStr.str.contains(usnRegex).any():
                 headerRow = idx
                 break
 
@@ -29,7 +31,6 @@ if uploadedFile is not None:
             data = pd.read_excel(uploadedFile, sheet_name=firstSheet, header=headerRow)
         else:
             st.error("Could not detect header row. Please check the uploaded file format.")
-            st.stop()
 
         if data is not None:
             st.success("✅ Max scores computed successfully!")
@@ -38,40 +39,35 @@ if uploadedFile is not None:
             with st.expander("📄 Preview of Input File"):
                 st.dataframe(data.head(10))
 
-            # Prepare regex pattern
-            usnPatternStr = r'(1[A-Z]{2,4}\d{2}[A-Z]{2,3}\d{3})'
-            usnPattern = re.compile(usnPatternStr, re.I)
-
-            # Detect USN column by name or content
-            usnCol = next((col for col in data.columns if re.search(r'usn', str(col), re.I) or
-                           data[col].astype(str).apply(lambda x: bool(usnPattern.fullmatch(str(x)))).sum() > 0), None)
+            # Detect USN column
+            usnCol = next((col for col in data.columns if re.search(r'usn', str(col), re.I)), None)
 
             if not usnCol:
                 st.error("❌ USN column not found.")
-                st.stop()
+            else:
+                # Extract cleaned USN values
+                usns = data[usnCol].astype(str).str.extract(r'(1[a-zA-Z]{2,4}\d{2}\w{2,3}\d{3})', expand=False)
+                data[usnCol] = usns
+                data = data.dropna(subset=[usnCol])
 
-            # Clean USN values
-            data[usnCol] = data[usnCol].astype(str).str.extract(usnPatternStr, expand=False)
-            data = data.dropna(subset=[usnCol])
+                # Remove unnecessary columns like evaluator_name, Eval_version, etc.
+                removeCols = [col for col in data.columns if re.search(r'(evaluator|eval[_ ]?version)', str(col), re.I)]
+                cleanedData = data.drop(columns=removeCols)
 
-            # Remove unwanted columns with names like evaluator, eval_version, etc.
-            removeCols = [col for col in data.columns if re.search(r'(evaluator|eval[_ ]?version)', str(col), re.I)]
-            cleanedData = data.drop(columns=removeCols)
+                # Group by USN and get max of each column
+                maxScores = cleanedData.groupby(usnCol, as_index=False).max(numeric_only=True)
 
-            # Group by USN and get max of each column
-            maxScores = cleanedData.groupby(usnCol, as_index=False).max(numeric_only=True)
+                st.subheader("📊 Max Scores Per USN")
+                st.dataframe(maxScores)
 
-            st.subheader("📊 Max Scores Per USN")
-            st.dataframe(maxScores)
+                # Download button
+                def convert_df(df):
+                    return df.to_excel(index=False, engine='openpyxl')
 
-            # Download button
-            def convert_df(df):
-                return df.to_excel(index=False, engine='openpyxl')
-
-            excelBytes = convert_df(maxScores)
-            b64 = base64.b64encode(excelBytes).decode()
-            href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="MaxScoresPerUSN.xlsx">📥 Download Max Scores Excel File</a>'
-            st.markdown(href, unsafe_allow_html=True)
+                excelBytes = convert_df(maxScores)
+                b64 = base64.b64encode(excelBytes).decode()
+                href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="MaxScoresPerUSN.xlsx">📥 Download Max Scores Excel File</a>'
+                st.markdown(href, unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"❌ Failed to process the file. Error: {e}")
